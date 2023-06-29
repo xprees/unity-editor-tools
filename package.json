@@ -1,0 +1,20 @@
+﻿{
+  "name": "cz.xprees.editor-tools",
+  "version": "1.0.0",
+  "displayName": "Editor Tools",
+  "description": "Editor Tools package contains useful tools for Unity Editor.",
+  "unity": "2021.3",
+  "unityRelease": "16f1",
+  "licensesUrl": "http://www.wtfpl.net/txt/copying/",
+  "category": "Editor",
+  "keywords": [
+    "Editor",
+    "Tooling"
+  ],
+  "author": {
+    "name": "xprees",
+    "email": "xprees.developer@gmail.com",
+    "url": "https://github.com/xprees"
+  },
+  "hideInEditor": true
+}

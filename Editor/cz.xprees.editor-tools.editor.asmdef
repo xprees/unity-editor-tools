@@ -1,0 +1,18 @@
+{
+  "name": "cz.xprees.editor-tools.editor",
+  "rootNamespace": "Xprees.EditorTools",
+  "references": [
+    "GUID:359f36c9ea1441da89f5bbf1778b36d2"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
