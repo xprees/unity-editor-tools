@@ -3,15 +3,16 @@
 
 using UnityEditor;
 using UnityEngine;
+using Xprees.EditorTools.Attributes.ReadOnly;
 
-namespace Xprees.EditorTools.Editor.Attributes.ReadOnlyAttribute
+namespace Xprees.EditorTools.Editor.Attributes.ReadOnly
 {
 #if UNITY_EDITOR
 
     /// <summary>
     /// Custom drawer for the ReadOnly attribute
     /// </summary>
-    [CustomPropertyDrawer(typeof(EditorTools.Attributes.ReadOnlyAttribute.ReadOnlyAttribute))]
+    [CustomPropertyDrawer(typeof(ReadOnlyAttribute))]
     public class ReadOnlyDrawer : PropertyDrawer
     {
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
