@@ -24,8 +24,6 @@ jobs:
           version: 1.0.${{ github.run_number }}
           npm-files: 'package.json'
       - run: npm i
-      - run: git config --global user.name "xprees"
-      - run: git config --global user.email "xprees.developer@gmail.com"
       - uses: JS-DevTools/npm-publish@v3
         with:
           token: ${{ secrets.NPM_AUTH_TOKEN }}
