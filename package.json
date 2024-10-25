@@ -21,6 +21,7 @@
     "url": "https://github.com/xprees/unity-editor-tools/issues"
   },
   "repository": {
-    "url": "https://github.com/xprees/unity-editor-tools"
+    "type": "git",
+    "url": "https://github.com/xprees/unity-editor-tools.git"
   }
 }
