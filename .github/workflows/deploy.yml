@@ -23,7 +23,6 @@ jobs:
         with:
           version: 1.0.${{ github.run_number }}
           npm-files: 'package.json'
-      - run: npm i
       - uses: JS-DevTools/npm-publish@v3
         with:
           token: ${{ secrets.NPM_AUTH_TOKEN }}
