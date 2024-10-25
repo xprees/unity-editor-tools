@@ -1,4 +1,4 @@
-﻿// This Code is used from Unity Open Source Project #1 (UOP1) Chop Chop
+// This Code is used from Unity Open Source Project #1 (UOP1) Chop Chop
 // https://github.com/UnityTechnologies/open-project-1
 
 using UnityEditor;
