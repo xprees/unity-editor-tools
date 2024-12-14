@@ -7,7 +7,7 @@
   "license": "MIT",
   "category": "Editor",
   "dependencies": {
-    "com.dbrizov.naughtyattributes": "^2.1.4"
+    "com.dbrizov.naughtyattributes": "2.1.4"
   },
   "keywords": [
     "Unity",
