@@ -6,6 +6,9 @@
   "unity": "2021.3",
   "license": "MIT",
   "category": "Editor",
+  "dependencies": {
+    "com.dbrizov.naughtyattributes": "^2.1.4"
+  },
   "keywords": [
     "Unity",
     "Editor",
