@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+#if UNITY_EDITOR
 using UnityEditor;
-using ZLinq;
+#endif
 
 namespace Xprees.EditorTools.Extensions
 {
@@ -14,12 +16,10 @@ namespace Xprees.EditorTools.Extensions
 #if UNITY_EDITOR
             // TypeCache is much faster than AppDomain.GetAssemblies() in Unity Editor
             var types = TypeCache
-                .GetTypesDerivedFrom<T>()
-                .AsValueEnumerable();
+                .GetTypesDerivedFrom<T>();
 #else
             var type = typeof(T);
             var types = AppDomain.CurrentDomain.GetAssemblies()
-                .AsValueEnumerable()
                 .SelectMany(s => s.GetTypes())
                 .Where(p => type.IsAssignableFrom(p) && !p.IsInterface && !p.IsAbstract);
 #endif
