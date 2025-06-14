@@ -7,7 +7,8 @@
   "license": "MIT",
   "category": "Editor",
   "dependencies": {
-    "com.dbrizov.naughtyattributes": "2.1.4"
+    "com.dbrizov.naughtyattributes": "2.1.4",
+    "org.nuget.zlinq": "1.4.10"
   },
   "keywords": [
     "Unity",
