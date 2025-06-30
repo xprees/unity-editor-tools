@@ -32,5 +32,10 @@ namespace Xprees.EditorTools.Editor.Extensions
             return AssetDatabase.LoadAssetAtPath<T>(path);
         }
 
+        public static T LoadAssetFromGuid<T>(string guid) where T : Object
+        {
+            var path = AssetDatabase.GUIDToAssetPath(guid);
+            return AssetDatabase.LoadAssetAtPath<T>(path);
+        }
     }
 }
