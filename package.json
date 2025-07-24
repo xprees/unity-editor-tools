@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Editor Tools package contains useful tools for Unity Editor.",
   "unity": "2021.3",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "category": "Editor",
   "dependencies": {
     "com.dbrizov.naughtyattributes": "2.1.4"
