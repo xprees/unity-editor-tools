@@ -25,7 +25,10 @@ jobs:
         with:
           version: 1.0.${{ github.run_number }}
           npm-files: 'package.json'
-      - uses: JS-DevTools/npm-publish@v3
-        with:
-          access: public
-          ignore-scripts: true
+
+      # Ensure npm 11.5.1 or later is installed
+      - name: Update npm
+        run: npm install -g npm@latest
+      - run: npm publish --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
