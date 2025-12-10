@@ -12,6 +12,7 @@
   "keywords": [
     "Unity",
     "Editor",
+    "Optimization",
     "Tooling"
   ],
   "author": {
@@ -25,6 +26,6 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/xprees/unity-editor-tools.git"
+    "url": "https://github.com/xprees/unity-editor-tools"
   }
 }
