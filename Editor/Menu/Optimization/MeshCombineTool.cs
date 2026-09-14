@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -8,6 +8,9 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
     /// Set of Mesh optimization tools for combining meshes in Unity.
     public static class MeshCombineTool
     {
+        private const string EditorOnlyTag = "EditorOnly";
+        private const string UntaggedTag = "Untagged";
+
         [MenuItem("Tools/Optimization/Combine selected meshes (New Parent)", priority = 2)]
         public static void CombineSelectedMeshesCreateParent()
         {
@@ -114,13 +117,10 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 };
 
                 // Copy colliders from original mesh objects to the new combined mesh object
-                var colliders = meshFilter.GetComponentsInChildren<Collider>();
-                if (colliders.Length <= 0) continue;
-
-                foreach (var collider in colliders)
+                // Not needed to disable colliders as we are deactivating the whole object
+                foreach (var collider in meshFilter.GetComponentsInChildren<Collider>())
                 {
                     collider.CopyColliderTo(groupParent);
-                    // Not needed to disable collider as we are deactivating the whole object
                 }
 
                 if (destroyOriginals)
@@ -129,8 +129,10 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                     continue;
                 }
 
-                Undo.RegisterCompleteObjectUndo(meshFilter.gameObject, "Deactivate original mesh");
-                meshFilter.gameObject.SetActive(false); // Deactivate child mesh objects after combining
+                var originalGameObject = meshFilter.gameObject;
+                Undo.RegisterCompleteObjectUndo(originalGameObject, "Deactivate original mesh");
+                originalGameObject.SetActive(false); // Deactivate child mesh objects after combining
+                originalGameObject.tag = EditorOnlyTag; // Kept as a building block in the editor, stripped from builds
             }
 
             var combinedMesh = new Mesh();
@@ -148,11 +150,22 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
             Undo.RegisterCompleteObjectUndo(groupParent, "Activate combined mesh");
             groupParent.SetActive(true); // Activate parent mesh object
+            ClearEditorOnlyTag(groupParent);
 
             Undo.RegisterCompleteObjectUndo(parent, "Ensure parent active");
             parent.SetActive(true); // Ensure parent is active
+            ClearEditorOnlyTag(parent);
 
             EditorUtility.SetDirty(parent);
+        }
+
+        /// Clear the EditorOnly tag so the combined mesh is not stripped from builds together with its building blocks.
+        private static void ClearEditorOnlyTag(GameObject gameObject)
+        {
+            if (!gameObject.CompareTag(EditorOnlyTag)) return;
+
+            Undo.RecordObject(gameObject, "Clear EditorOnly Tag");
+            gameObject.tag = UntaggedTag;
         }
 
         private static IEnumerable<GameObject> GetChildGameObjects(this GameObject parent, bool includeInactive = false)
