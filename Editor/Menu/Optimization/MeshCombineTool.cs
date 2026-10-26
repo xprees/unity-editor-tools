@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -5,40 +6,21 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Rendering;
+using UnityEngine.SceneManagement;
+using Object = UnityEngine.Object;
 
 namespace Xprees.EditorTools.Editor.Menu.Optimization
 {
     /// Set of Mesh optimization tools for combining meshes in Unity.
     public static class MeshCombineTool
     {
+        public const string CombinedMeshPrefix = "Combined Mesh";
         private const string EditorOnlyTag = "EditorOnly";
         private const string UntaggedTag = "Untagged";
         private const string FallbackMeshFolder = "Assets/CombinedMeshes";
 
         [MenuItem("Tools/Optimization/Combine selected meshes (New Parent)", priority = 2)]
-        public static void CombineSelectedMeshesCreateParent()
-        {
-            var selectedGameObjects = Selection.gameObjects;
-
-            Undo.IncrementCurrentGroup();
-            var undoGroupIndex = Undo.GetCurrentGroup();
-            Undo.SetCurrentGroupName("Combine selected meshes (New Parent)");
-
-            var parentGameObject = new GameObject("Combined Mesh")
-            {
-                isStatic = true, // Set parent as static by default - children may vary
-            };
-            Undo.RegisterCreatedObjectUndo(parentGameObject, "Combine selected meshes (New Parent)");
-
-            foreach (var selectedObject in selectedGameObjects)
-            {
-                Undo.RegisterCompleteObjectUndo(selectedObject, "Combine selected meshes (New Parent)");
-            }
-
-            CombineMeshesAndColliders(parentGameObject, selectedGameObjects);
-
-            Undo.CollapseUndoOperations(undoGroupIndex);
-        }
+        public static void CombineSelectedMeshesCreateParent() => CombineIntoNewParent(Selection.gameObjects);
 
         [MenuItem("Tools/Optimization/Combine child meshes of selected parent", priority = 1)]
         public static void CombineChildMeshesOfSelectedParent()
@@ -50,25 +32,120 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 return;
             }
 
-            var childGameObject = parentGameObject.GetChildGameObjects().ToArray();
+            CombineChildren(parentGameObject);
+        }
+
+        /// Combine the active child meshes of the parent into "Combined Mesh - ..." children (one per material, static flag and layer).
+        /// The originals are deactivated and tagged EditorOnly. Mesh assets are saved next to <paramref name="meshOwnerPath"/>
+        /// (prefab or scene asset path), resolved from the parent when empty. Returns the combined objects.
+        public static List<GameObject> CombineChildren(GameObject parent, string meshOwnerPath = null)
+        {
+            const string undoName = "Combine child meshes of selected parent";
+            var children = parent.GetChildGameObjects().ToArray();
 
             Undo.IncrementCurrentGroup();
             var undoGroupIndex = Undo.GetCurrentGroup();
-            Undo.SetCurrentGroupName("Combine child meshes of selected parent");
+            Undo.SetCurrentGroupName(undoName);
 
-            Undo.RegisterCompleteObjectUndo(parentGameObject, "Combine child meshes of selected parent");
-            foreach (var child in childGameObject)
+            Undo.RegisterCompleteObjectUndo(parent, undoName);
+            foreach (var child in children)
             {
-                Undo.RegisterCompleteObjectUndo(child, "Combine child meshes of selected parent");
+                Undo.RegisterCompleteObjectUndo(child, undoName);
             }
 
-            CombineMeshesAndColliders(parentGameObject, childGameObject);
+            var combined = CombineMeshesAndColliders(parent, children, meshOwnerPath);
 
             Undo.CollapseUndoOperations(undoGroupIndex);
+            return combined;
         }
 
+        /// Combine the objects into a new "Combined Mesh" parent placed under <paramref name="container"/>. Without a container it goes to the
+        /// scene root of the first object, or under the prefab root when the objects are inside a prefab (a new root would not be saved).
+        public static List<GameObject> CombineIntoNewParent(GameObject[] objects, Transform container = null, string meshOwnerPath = null)
+        {
+            const string undoName = "Combine selected meshes (New Parent)";
+            if (objects.Length == 0) return new List<GameObject>();
 
-        private static void CombineMeshesAndColliders(GameObject parent, GameObject[] children)
+            Undo.IncrementCurrentGroup();
+            var undoGroupIndex = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName(undoName);
+
+            var parentGameObject = new GameObject(CombinedMeshPrefix)
+            {
+                isStatic = true, // Set parent as static by default - children may vary
+            };
+
+            var firstObject = objects[0];
+            if (container == null && EditorSceneManager.IsPreviewScene(firstObject.scene)) container = firstObject.transform.root;
+            if (container != null) parentGameObject.transform.SetParent(container, false);
+            else SceneManager.MoveGameObjectToScene(parentGameObject, firstObject.scene);
+            Undo.RegisterCreatedObjectUndo(parentGameObject, undoName);
+
+            foreach (var selectedObject in objects)
+            {
+                Undo.RegisterCompleteObjectUndo(selectedObject, undoName);
+            }
+
+            var combined = CombineMeshesAndColliders(parentGameObject, objects, meshOwnerPath);
+
+            Undo.CollapseUndoOperations(undoGroupIndex);
+            return combined;
+        }
+
+        /// A "Combined Mesh - ..." object created by this tool.
+        public static bool IsCombinedMesh(MeshFilter meshFilter) => meshFilter.name.StartsWith(CombinedMeshPrefix);
+
+        /// The mesh is missing or only in memory (stored in a scene at best, dropped when a prefab is saved).
+        public static bool HasUnsavedMesh(MeshFilter meshFilter) =>
+            !meshFilter.sharedMesh || !EditorUtility.IsPersistent(meshFilter.sharedMesh);
+
+        /// Save the combined mesh as an asset: a copy of the in-memory mesh, or a missing mesh rebuilt from the EditorOnly originals next to it
+        /// (siblings with the same material, static flag and layer). Returns null when there is nothing to rebuild from.
+        public static Mesh SaveOrRebuildCombinedMesh(MeshFilter combined, string meshOwnerPath = null)
+        {
+            var mesh = combined.sharedMesh ? Object.Instantiate(combined.sharedMesh) : RebuildFromOriginals(combined);
+            if (!mesh) return null;
+
+            mesh.name = combined.name;
+            SaveMeshAsset(mesh, combined.gameObject, meshOwnerPath);
+            Undo.RecordObject(combined, "Save combined mesh");
+            combined.sharedMesh = mesh;
+            return mesh;
+        }
+
+        /// Combine the EditorOnly originals next to the combined object into a new in-memory mesh (not saved). Null when there are none.
+        public static Mesh RebuildFromOriginals(MeshFilter combined)
+        {
+            var material = combined.GetComponent<MeshRenderer>()?.sharedMaterial;
+            var combinedObject = combined.gameObject;
+            var toCombinedSpace = combined.transform.worldToLocalMatrix;
+            var parts = combined.transform.parent
+                ? combined.transform.parent.Cast<Transform>()
+                    .Where(original => original != combined.transform && !original.gameObject.activeSelf && original.CompareTag(EditorOnlyTag)
+                                       && original.gameObject.isStatic == combinedObject.isStatic
+                                       && original.gameObject.layer == combinedObject.layer)
+                    .Select(original => (meshFilter: original.GetComponent<MeshFilter>(), renderer: original.GetComponent<MeshRenderer>()))
+                    .Where(x => x.meshFilter && x.meshFilter.sharedMesh && x.renderer && x.renderer.sharedMaterial == material)
+                    .Select(x => new CombineInstance
+                        { mesh = x.meshFilter.sharedMesh, transform = toCombinedSpace * x.meshFilter.transform.localToWorldMatrix })
+                    .ToArray()
+                : Array.Empty<CombineInstance>();
+            return parts.Length > 0 ? CreateCombinedMesh(parts, combined.name) : null;
+        }
+
+        private static Mesh CreateCombinedMesh(CombineInstance[] parts, string name)
+        {
+            var vertexCount = parts.Sum(c => (long) c.mesh.vertexCount);
+            var mesh = new Mesh
+            {
+                name = name,
+                indexFormat = vertexCount > ushort.MaxValue ? IndexFormat.UInt32 : IndexFormat.UInt16,
+            };
+            mesh.CombineMeshes(parts);
+            return mesh;
+        }
+
+        private static List<GameObject> CombineMeshesAndColliders(GameObject parent, GameObject[] children, string meshOwnerPath)
         {
             var meshFilters = children.Select(child => child.GetComponent<MeshFilter>()).ToArray();
             var materialGroups = meshFilters
@@ -81,23 +158,22 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                     return (renderer.sharedMaterial, mfGameObject.isStatic, mfGameObject.layer); // Group by material, static flag, and layer
                 });
 
-
-            foreach (var materialGroup in materialGroups)
-            {
-                CombineMeshAndCollidersForOneMaterial(parent, materialGroup);
-            }
+            return materialGroups.Select(materialGroup => CombineMeshAndCollidersForOneMaterial(parent, materialGroup, meshOwnerPath))
+                .Where(groupParent => groupParent)
+                .ToList();
         }
 
         /// Combine meshes that share the same material into a single mesh. Destroy original meshes if specified or just disable.
-        private static void CombineMeshAndCollidersForOneMaterial(
+        private static GameObject CombineMeshAndCollidersForOneMaterial(
             GameObject parent,
             IGrouping<(Material material, bool isStatic, int layer), (MeshFilter meshFilter, MeshRenderer renderer)> materialGroup,
+            string meshOwnerPath,
             bool destroyOriginals = false
         )
         {
             var combineGroup = materialGroup.ToArray();
             var groupLength = combineGroup.Length;
-            if (groupLength <= 0) return;
+            if (groupLength <= 0) return null;
 
             var combineMeshes = new CombineInstance[groupLength];
 
@@ -142,16 +218,10 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
             var groupedMaterial = materialGroup.Key.material;
             groupParent.name =
-                $"Combined Mesh - {groupedMaterial.name} - {(shouldBeStatic ? "Static" : "Dynamic")} - {LayerMask.LayerToName(objectLayer)}";
+                $"{CombinedMeshPrefix} - {groupedMaterial.name} - {(shouldBeStatic ? "Static" : "Dynamic")} - {LayerMask.LayerToName(objectLayer)}";
 
-            var vertexCount = combineMeshes.Sum(c => (long) c.mesh.vertexCount);
-            var combinedMesh = new Mesh
-            {
-                name = groupParent.name,
-                indexFormat = vertexCount > ushort.MaxValue ? IndexFormat.UInt32 : IndexFormat.UInt16,
-            };
-            combinedMesh.CombineMeshes(combineMeshes);
-            SaveMeshAsset(combinedMesh, parent); // Prefabs can't serialize in-memory meshes, the reference would be lost on save
+            var combinedMesh = CreateCombinedMesh(combineMeshes, groupParent.name);
+            SaveMeshAsset(combinedMesh, parent, meshOwnerPath); // Prefabs can't serialize in-memory meshes, the reference would be lost on save
 
             var meshRenderer = groupParent.AddComponent<MeshRenderer>();
             meshRenderer.sharedMaterial = groupedMaterial;
@@ -168,13 +238,15 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             ClearEditorOnlyTag(parent);
 
             EditorUtility.SetDirty(parent);
+            return groupParent;
         }
 
-        /// Save the mesh as an asset next to the prefab or scene owning the parent ("&lt;Owner&gt;_CombinedMeshes" folder).
+        /// Save the mesh as an asset next to the prefab or scene owning the parent ("&lt;Owner&gt;_CombinedMeshes" folder),
+        /// or next to <paramref name="ownerPath"/> when given (prefab contents loaded outside Prefab Mode have no owner to resolve).
         /// Asset creation is not undoable - undoing the combine leaves the mesh asset orphaned.
-        private static void SaveMeshAsset(Mesh mesh, GameObject parent)
+        private static void SaveMeshAsset(Mesh mesh, GameObject parent, string ownerPath = null)
         {
-            var ownerPath = PrefabStageUtility.GetPrefabStage(parent)?.assetPath;
+            if (string.IsNullOrEmpty(ownerPath)) ownerPath = PrefabStageUtility.GetPrefabStage(parent)?.assetPath;
             if (string.IsNullOrEmpty(ownerPath) && PrefabUtility.IsPartOfPrefabInstance(parent))
                 ownerPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(parent);
             if (string.IsNullOrEmpty(ownerPath)) ownerPath = parent.scene.path;
