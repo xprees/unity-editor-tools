@@ -149,6 +149,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             var mesh = combined.sharedMesh ? Object.Instantiate(combined.sharedMesh) : RebuildFromOriginals(combined);
             if (!mesh) return null;
 
+            if (combined.gameObject.isStatic && !mesh.HasVertexAttribute(VertexAttribute.TexCoord1)) GenerateLightmapUVs(mesh);
+
             mesh.name = combined.name;
             SaveMeshAsset(mesh, combined.gameObject, meshOwnerPath);
             Undo.RecordObject(combined, "Save combined mesh");
@@ -165,7 +167,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             var parts = combined.transform.parent
                 ? combined.transform.parent.Cast<Transform>()
                     .Where(original => original != combined.transform && !original.gameObject.activeSelf && original.CompareTag(EditorOnlyTag)
-                                       && original.gameObject.isStatic == combinedObject.isStatic
+                                       && GameObjectUtility.GetStaticEditorFlags(original.gameObject)
+                                       == GameObjectUtility.GetStaticEditorFlags(combinedObject)
                                        && original.gameObject.layer == combinedObject.layer)
                     .Select(original => (meshFilter: original.GetComponent<MeshFilter>(), renderer: original.GetComponent<MeshRenderer>()))
                     .Where(x => x.meshFilter && x.meshFilter.sharedMesh && x.renderer && x.renderer.sharedMaterial == material)
@@ -173,10 +176,10 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                         { mesh = x.meshFilter.sharedMesh, transform = toCombinedSpace * x.meshFilter.transform.localToWorldMatrix })
                     .ToArray()
                 : Array.Empty<CombineInstance>();
-            return parts.Length > 0 ? CreateCombinedMesh(parts, combined.name) : null;
+            return parts.Length > 0 ? CreateCombinedMesh(parts, combined.name, combinedObject.isStatic) : null;
         }
 
-        private static Mesh CreateCombinedMesh(CombineInstance[] parts, string name)
+        private static Mesh CreateCombinedMesh(CombineInstance[] parts, string name, bool generateLightmapUVs)
         {
             var vertexCount = parts.Sum(c => (long) c.mesh.vertexCount);
             var mesh = new Mesh
@@ -185,7 +188,15 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 indexFormat = vertexCount > ushort.MaxValue ? IndexFormat.UInt32 : IndexFormat.UInt16,
             };
             mesh.CombineMeshes(parts);
+            if (generateLightmapUVs) GenerateLightmapUVs(mesh);
             return mesh;
+        }
+
+        /// Unique lightmap UVs (UV2) for a static combined mesh. Without them the lightmapper falls back to UV0, which on palette-textured
+        /// meshes (PolygonOffice) packs the whole combined room into a few texels: flat, smeared baked light and bounce.
+        public static void GenerateLightmapUVs(Mesh mesh)
+        {
+            if (!Unwrapping.GenerateSecondaryUVSet(mesh)) Debug.LogWarning($"Lightmap UV generation failed for '{mesh.name}'.");
         }
 
         private static List<GameObject> CombineMeshesAndColliders(GameObject parent, GameObject[] children, string meshOwnerPath)
@@ -198,7 +209,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 {
                     var (mf, renderer) = x;
                     var mfGameObject = mf.gameObject;
-                    return (renderer.sharedMaterial, mfGameObject.isStatic, mfGameObject.layer); // Group by material, static flag, and layer
+                    // Group by material, static flags (e.g. glass without Occluder Static stays apart), and layer
+                    return (renderer.sharedMaterial, GameObjectUtility.GetStaticEditorFlags(mfGameObject), mfGameObject.layer);
                 });
 
             return materialGroups.Select(materialGroup => CombineMeshAndCollidersForOneMaterial(parent, materialGroup, meshOwnerPath))
@@ -209,7 +221,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         /// Combine meshes that share the same material into a single mesh. Destroy original meshes if specified or just disable.
         private static GameObject CombineMeshAndCollidersForOneMaterial(
             GameObject parent,
-            IGrouping<(Material material, bool isStatic, int layer), (MeshFilter meshFilter, MeshRenderer renderer)> materialGroup,
+            IGrouping<(Material material, StaticEditorFlags staticFlags, int layer), (MeshFilter meshFilter, MeshRenderer renderer)>
+                materialGroup,
             string meshOwnerPath,
             bool destroyOriginals = false
         )
@@ -220,13 +233,11 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
             var combineMeshes = new CombineInstance[groupLength];
 
-            var shouldBeStatic = materialGroup.Key.isStatic;
+            var staticFlags = materialGroup.Key.staticFlags;
+            var shouldBeStatic = staticFlags != 0;
             var objectLayer = materialGroup.Key.layer;
-            var groupParent = new GameObject
-            {
-                isStatic = shouldBeStatic,
-                layer = objectLayer,
-            };
+            var groupParent = new GameObject { layer = objectLayer };
+            GameObjectUtility.SetStaticEditorFlags(groupParent, staticFlags); // The originals' flags, not all of them (isStatic)
             groupParent.transform.SetParent(parent.transform);
             Undo.RegisterCreatedObjectUndo(groupParent, "Combine Meshes parent");
 
@@ -263,7 +274,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             groupParent.name =
                 $"{CombinedMeshPrefix} - {groupedMaterial.name} - {(shouldBeStatic ? "Static" : "Dynamic")} - {LayerMask.LayerToName(objectLayer)}";
 
-            var combinedMesh = CreateCombinedMesh(combineMeshes, groupParent.name);
+            var combinedMesh = CreateCombinedMesh(combineMeshes, groupParent.name, shouldBeStatic);
             SaveMeshAsset(combinedMesh, parent, meshOwnerPath); // Prefabs can't serialize in-memory meshes, the reference would be lost on save
 
             var meshRenderer = groupParent.AddComponent<MeshRenderer>();

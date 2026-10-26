@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 
 namespace Xprees.EditorTools.Editor.Menu.Optimization
@@ -71,6 +72,15 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                     {
                         Modify(meshes, "Optimize mesh", MeshUtility.Optimize);
                     }
+                }
+
+                var withoutLightmapUVs = meshes.Count(mesh => !mesh.HasVertexAttribute(VertexAttribute.TexCoord1));
+                if (GUILayout.Button(new GUIContent(
+                        withoutLightmapUVs > 0 ? $"Generate lightmap UVs ({withoutLightmapUVs} missing)" : "Regenerate lightmap UVs",
+                        "Unique UV2 for baked lighting. Without it the lightmapper uses UV0, which on palette-textured combined meshes "
+                        + "packs the whole mesh into a few lightmap texels. Rebake the lighting afterwards.")))
+                {
+                    Modify(meshes, "Generate lightmap UVs", MeshCombineTool.GenerateLightmapUVs);
                 }
 
                 DrawMeshLods(meshes);
