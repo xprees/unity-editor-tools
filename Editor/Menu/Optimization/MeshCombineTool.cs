@@ -1,7 +1,10 @@
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace Xprees.EditorTools.Editor.Menu.Optimization
 {
@@ -10,6 +13,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
     {
         private const string EditorOnlyTag = "EditorOnly";
         private const string UntaggedTag = "Untagged";
+        private const string FallbackMeshFolder = "Assets/CombinedMeshes";
 
         [MenuItem("Tools/Optimization/Combine selected meshes (New Parent)", priority = 2)]
         public static void CombineSelectedMeshesCreateParent()
@@ -68,6 +72,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         {
             var meshFilters = children.Select(child => child.GetComponent<MeshFilter>()).ToArray();
             var materialGroups = meshFilters
+                .Where(mf => mf != null && mf.sharedMesh != null && mf.TryGetComponent<MeshRenderer>(out _)) // Skip non-mesh objects
                 .Select(mf => (mf, mf.GetComponent<MeshRenderer>()))
                 .GroupBy(x =>
                 {
@@ -135,12 +140,18 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 originalGameObject.tag = EditorOnlyTag; // Kept as a building block in the editor, stripped from builds
             }
 
-            var combinedMesh = new Mesh();
-            combinedMesh.CombineMeshes(combineMeshes);
-
             var groupedMaterial = materialGroup.Key.material;
             groupParent.name =
                 $"Combined Mesh - {groupedMaterial.name} - {(shouldBeStatic ? "Static" : "Dynamic")} - {LayerMask.LayerToName(objectLayer)}";
+
+            var vertexCount = combineMeshes.Sum(c => (long) c.mesh.vertexCount);
+            var combinedMesh = new Mesh
+            {
+                name = groupParent.name,
+                indexFormat = vertexCount > ushort.MaxValue ? IndexFormat.UInt32 : IndexFormat.UInt16,
+            };
+            combinedMesh.CombineMeshes(combineMeshes);
+            SaveMeshAsset(combinedMesh, parent); // Prefabs can't serialize in-memory meshes, the reference would be lost on save
 
             var meshRenderer = groupParent.AddComponent<MeshRenderer>();
             meshRenderer.sharedMaterial = groupedMaterial;
@@ -157,6 +168,34 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             ClearEditorOnlyTag(parent);
 
             EditorUtility.SetDirty(parent);
+        }
+
+        /// Save the mesh as an asset next to the prefab or scene owning the parent ("&lt;Owner&gt;_CombinedMeshes" folder).
+        /// Asset creation is not undoable - undoing the combine leaves the mesh asset orphaned.
+        private static void SaveMeshAsset(Mesh mesh, GameObject parent)
+        {
+            var ownerPath = PrefabStageUtility.GetPrefabStage(parent)?.assetPath;
+            if (string.IsNullOrEmpty(ownerPath) && PrefabUtility.IsPartOfPrefabInstance(parent))
+                ownerPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(parent);
+            if (string.IsNullOrEmpty(ownerPath)) ownerPath = parent.scene.path;
+
+            var folder = FallbackMeshFolder;
+            if (!string.IsNullOrEmpty(ownerPath) && ownerPath.StartsWith("Assets/"))
+                folder = $"{Path.GetDirectoryName(ownerPath)!.Replace('\\', '/')}/{Path.GetFileNameWithoutExtension(ownerPath)}_CombinedMeshes";
+
+            EnsureFolder(folder);
+            var fileName = string.Concat(mesh.name.Split(Path.GetInvalidFileNameChars()));
+            var path = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{fileName}.asset");
+            AssetDatabase.CreateAsset(mesh, path);
+        }
+
+        private static void EnsureFolder(string folder)
+        {
+            if (AssetDatabase.IsValidFolder(folder)) return;
+
+            var parentFolder = Path.GetDirectoryName(folder)!.Replace('\\', '/');
+            EnsureFolder(parentFolder);
+            AssetDatabase.CreateFolder(parentFolder, Path.GetFileName(folder));
         }
 
         /// Clear the EditorOnly tag so the combined mesh is not stripped from builds together with its building blocks.
