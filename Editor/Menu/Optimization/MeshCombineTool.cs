@@ -18,6 +18,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         private const string EditorOnlyTag = "EditorOnly";
         private const string UntaggedTag = "Untagged";
         private const string FallbackMeshFolder = "Assets/CombinedMeshes";
+        private const string SceneMeshSubfolder = "combined-meshes";
 
         [MenuItem("Tools/Optimization/Combine selected meshes (New Parent)", priority = 2)]
         public static void CombineSelectedMeshesCreateParent() => CombineIntoNewParent(Selection.gameObjects);
@@ -35,14 +36,54 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             CombineChildren(parentGameObject);
         }
 
+        [MenuItem("Tools/Optimization/Combine all meshes under selected parent (recursive)", priority = 3)]
+        public static void CombineDescendantMeshesOfSelectedParent()
+        {
+            var parentGameObject = Selection.activeGameObject;
+            if (parentGameObject == null)
+            {
+                Debug.LogError("No active GameObject selected.");
+                return;
+            }
+
+            CombineDescendants(parentGameObject);
+        }
+
         /// Combine the active child meshes of the parent into "Combined Mesh - ..." children (one per material, static flag and layer).
         /// The originals are deactivated and tagged EditorOnly. Mesh assets are saved next to <paramref name="meshOwnerPath"/>
         /// (prefab or scene asset path), resolved from the parent when empty. Returns the combined objects.
-        public static List<GameObject> CombineChildren(GameObject parent, string meshOwnerPath = null)
-        {
-            const string undoName = "Combine child meshes of selected parent";
-            var children = parent.GetChildGameObjects().ToArray();
+        public static List<GameObject> CombineChildren(GameObject parent, string meshOwnerPath = null) =>
+            CombineUnderParent(parent, parent.GetChildGameObjects().ToArray(), "Combine child meshes of selected parent", meshOwnerPath);
 
+        /// Combine the plain mesh objects (only MeshFilter, MeshRenderer and colliders, no children) at any depth under the parent into
+        /// "Combined Mesh - ..." children of the parent, like <see cref="CombineChildren"/>. Inactive objects, mesh objects with children and objects
+        /// with other components (scripts, lights, LODs...) are skipped with their whole subtree. Existing combined meshes are merged in.
+        public static List<GameObject> CombineDescendants(GameObject parent, string meshOwnerPath = null)
+        {
+            var pieces = new List<GameObject>();
+            CollectPlainMeshes(parent.transform, pieces);
+            return CombineUnderParent(parent, pieces.ToArray(), "Combine all meshes under selected parent", meshOwnerPath);
+        }
+
+        private static void CollectPlainMeshes(Transform parent, List<GameObject> pieces)
+        {
+            foreach (Transform child in parent)
+            {
+                var childObject = child.gameObject;
+                if (!childObject.activeSelf) continue;
+
+                var components = childObject.GetComponents<Component>();
+                if (components.Length == 1) CollectPlainMeshes(child, pieces); // Empty container (only Transform)
+                else if (child.childCount == 0 && components.All(IsPlainMeshComponent) && childObject.TryGetComponent<MeshFilter>(out _))
+                    pieces.Add(childObject);
+            }
+        }
+
+        private static bool IsPlainMeshComponent(Component component) =>
+            component is Transform or MeshFilter or MeshRenderer or Collider;
+
+        private static List<GameObject> CombineUnderParent(GameObject parent, GameObject[] children, string undoName, string meshOwnerPath)
+        {
             Undo.IncrementCurrentGroup();
             var undoGroupIndex = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName(undoName);
@@ -56,6 +97,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             var combined = CombineMeshesAndColliders(parent, children, meshOwnerPath);
 
             Undo.CollapseUndoOperations(undoGroupIndex);
+            CombinedMeshUndo.Track(undoGroupIndex, parent, meshOwnerPath, combined);
             return combined;
         }
 
@@ -89,6 +131,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             var combined = CombineMeshesAndColliders(parentGameObject, objects, meshOwnerPath);
 
             Undo.CollapseUndoOperations(undoGroupIndex);
+            CombinedMeshUndo.Track(undoGroupIndex, parentGameObject, meshOwnerPath, combined);
             return combined;
         }
 
@@ -241,7 +284,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             return groupParent;
         }
 
-        /// Save the mesh as an asset next to the prefab or scene owning the parent ("&lt;Owner&gt;_CombinedMeshes" folder),
+        /// Save the mesh as an asset next to the prefab ("&lt;Prefab&gt;_CombinedMeshes" folder) or in the scene folder ("&lt;Scene&gt;/combined-meshes")
+        /// owning the parent,
         /// or next to <paramref name="ownerPath"/> when given (prefab contents loaded outside Prefab Mode have no owner to resolve).
         /// Asset creation is not undoable - undoing the combine leaves the mesh asset orphaned.
         private static void SaveMeshAsset(Mesh mesh, GameObject parent, string ownerPath = null)
@@ -253,12 +297,22 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
             var folder = FallbackMeshFolder;
             if (!string.IsNullOrEmpty(ownerPath) && ownerPath.StartsWith("Assets/"))
-                folder = $"{Path.GetDirectoryName(ownerPath)!.Replace('\\', '/')}/{Path.GetFileNameWithoutExtension(ownerPath)}_CombinedMeshes";
+            {
+                var ownerFolder = $"{Path.GetDirectoryName(ownerPath)!.Replace('\\', '/')}/{Path.GetFileNameWithoutExtension(ownerPath)}";
+                // Scenes use their default data folder (lighting, navmesh...) named like the scene
+                folder = ownerPath.EndsWith(".unity") ? $"{ownerFolder}/{SceneMeshSubfolder}" : $"{ownerFolder}_CombinedMeshes";
+            }
 
             EnsureFolder(folder);
             var fileName = string.Concat(mesh.name.Split(Path.GetInvalidFileNameChars()));
             var path = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{fileName}.asset");
+
+            // Defaults: smaller build (compression) and no CPU copy at runtime (combined meshes are only rendered). Tweak in the Mesh inspector header
+            MeshUtility.Optimize(mesh);
+            MeshUtility.SetMeshCompression(mesh, ModelImporterMeshCompression.Medium);
             AssetDatabase.CreateAsset(mesh, path);
+            MeshAssetOptimizationHeader.SetReadable(mesh, false);
+            AssetDatabase.SaveAssetIfDirty(mesh);
         }
 
         private static void EnsureFolder(string folder)
