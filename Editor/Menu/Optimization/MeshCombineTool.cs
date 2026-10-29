@@ -277,7 +277,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             var mesh = combined.sharedMesh ? Object.Instantiate(combined.sharedMesh) : RebuildFromOriginals(combined);
             if (!mesh) return null;
 
-            if (combined.gameObject.isStatic && !mesh.HasVertexAttribute(VertexAttribute.TexCoord1)) GenerateLightmapUVs(mesh);
+            if (NeedsLightmapUVs(GameObjectUtility.GetStaticEditorFlags(combined.gameObject))
+                && !mesh.HasVertexAttribute(VertexAttribute.TexCoord1)) GenerateLightmapUVs(mesh);
 
             mesh.name = combined.name;
             SaveMeshAsset(mesh, combined.gameObject, meshOwnerPath);
@@ -309,9 +310,12 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                     })
                     .ToArray()
                 : Array.Empty<CombineInstance>();
-            return parts.Length > 0 ? CreateCombinedMesh(parts, combined.name, combinedObject.isStatic) : null;
+            return parts.Length > 0
+                ? CreateCombinedMesh(parts, combined.name, NeedsLightmapUVs(GameObjectUtility.GetStaticEditorFlags(combinedObject)))
+                : null;
         }
 
+        /// Lightmap UVs (UV2) are generated when the objects contribute GI, otherwise removed.
         private static Mesh CreateCombinedMesh(CombineInstance[] parts, string name, bool generateLightmapUVs)
         {
             var vertexCount = parts.Sum(c => (long) c.mesh.vertexCount);
@@ -322,6 +326,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             };
             mesh.CombineMeshes(parts);
             if (generateLightmapUVs) GenerateLightmapUVs(mesh);
+            else RemoveLightmapUVs(mesh); // Source meshes (FBX) may bring their own UV2
             return mesh;
         }
 
@@ -331,6 +336,12 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         {
             if (!Unwrapping.GenerateSecondaryUVSet(mesh)) Debug.LogWarning($"Lightmap UV generation failed for '{mesh.name}'.");
         }
+
+        /// Only objects that contribute to GI are lightmapped. Without the flag the UV2 channel is dead weight (8 bytes per vertex).
+        public static bool NeedsLightmapUVs(StaticEditorFlags staticFlags) => (staticFlags & StaticEditorFlags.ContributeGI) != 0;
+
+        /// Drop the lightmap UVs (UV2), e.g. from meshes of a scene that is not baked.
+        public static void RemoveLightmapUVs(Mesh mesh) => mesh.uv2 = null;
 
         private static List<GameObject> CombineMeshesAndColliders(
             GameObject parent,
@@ -441,7 +452,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             groupParent.name =
                 $"{CombinedMeshPrefix} - {groupedMaterial.name} - {(shouldBeStatic ? "Static" : "Dynamic")} - {LayerMask.LayerToName(objectLayer)}";
 
-            var combinedMesh = CreateCombinedMesh(combineMeshes, groupParent.name, shouldBeStatic);
+            var combinedMesh = CreateCombinedMesh(combineMeshes, groupParent.name, NeedsLightmapUVs(staticFlags));
             // Prefabs can't serialize in-memory meshes, the reference would be lost on save. A rebake writes into the old asset of the same name
             string reusePath = null;
             if (rebake != null && rebake.Reusable.TryGetValue(groupParent.name, out var reusable) && reusable.Count > 0)

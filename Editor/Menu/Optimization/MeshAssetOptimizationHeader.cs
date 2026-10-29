@@ -83,6 +83,16 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                     Modify(meshes, "Generate lightmap UVs", MeshCombineTool.GenerateLightmapUVs);
                 }
 
+                using (new EditorGUI.DisabledScope(withoutLightmapUVs == meshes.Length))
+                {
+                    if (GUILayout.Button(new GUIContent("Remove lightmap UVs",
+                            "Drops UV2 (8 bytes per vertex) from meshes that are never lightmapped. A rebake of a combined mesh adds it back "
+                            + "only when its objects are Contribute GI static.")))
+                    {
+                        Modify(meshes, "Remove lightmap UVs", MeshCombineTool.RemoveLightmapUVs);
+                    }
+                }
+
                 DrawMeshLods(meshes);
             }
 
