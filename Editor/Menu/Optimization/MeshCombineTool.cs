@@ -299,9 +299,14 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                                        == GameObjectUtility.GetStaticEditorFlags(combinedObject)
                                        && original.gameObject.layer == combinedObject.layer)
                     .Select(original => (meshFilter: original.GetComponent<MeshFilter>(), renderer: original.GetComponent<MeshRenderer>()))
-                    .Where(x => x.meshFilter && x.meshFilter.sharedMesh && x.renderer && x.renderer.sharedMaterial == material)
+                    .Where(x => x.meshFilter && x.meshFilter.sharedMesh && x.renderer)
+                    .SelectMany(x => SubMeshParts(x.meshFilter, x.renderer))
+                    .Where(x => x.material == material)
                     .Select(x => new CombineInstance
-                        { mesh = x.meshFilter.sharedMesh, transform = toCombinedSpace * x.meshFilter.transform.localToWorldMatrix })
+                    {
+                        mesh = x.meshFilter.sharedMesh, subMeshIndex = x.subMeshIndex,
+                        transform = toCombinedSpace * x.meshFilter.transform.localToWorldMatrix,
+                    })
                     .ToArray()
                 : Array.Empty<CombineInstance>();
             return parts.Length > 0 ? CreateCombinedMesh(parts, combined.name, combinedObject.isStatic) : null;
@@ -337,13 +342,12 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             var meshFilters = children.Select(child => child.GetComponent<MeshFilter>()).ToArray();
             var materialGroups = meshFilters
                 .Where(mf => mf != null && mf.sharedMesh != null && mf.TryGetComponent<MeshRenderer>(out _)) // Skip non-mesh objects
-                .Select(mf => (mf, mf.GetComponent<MeshRenderer>()))
+                .SelectMany(mf => SubMeshParts(mf, mf.GetComponent<MeshRenderer>()))
                 .GroupBy(x =>
                 {
-                    var (mf, renderer) = x;
-                    var mfGameObject = mf.gameObject;
+                    var mfGameObject = x.meshFilter.gameObject;
                     // Group by material, static flags (e.g. glass without Occluder Static stays apart), and layer
-                    return (renderer.sharedMaterial, GameObjectUtility.GetStaticEditorFlags(mfGameObject), mfGameObject.layer);
+                    return (x.material, GameObjectUtility.GetStaticEditorFlags(mfGameObject), mfGameObject.layer);
                 });
 
             var combined = materialGroups
@@ -360,10 +364,26 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             return combined;
         }
 
+        /// One part per rendered submesh with its material slot (a monitor gives its body and its screen), so a multi-material mesh keeps
+        /// every submesh. Submeshes without a material and extra material slots (drawn again over the last submesh) are left out.
+        private static IEnumerable<(MeshFilter meshFilter, MeshRenderer renderer, int subMeshIndex, Material material)> SubMeshParts(
+            MeshFilter meshFilter,
+            MeshRenderer renderer
+        )
+        {
+            var materials = renderer.sharedMaterials;
+            var count = Mathf.Min(meshFilter.sharedMesh.subMeshCount, materials.Length);
+            for (var i = 0; i < count; i++)
+            {
+                if (materials[i]) yield return (meshFilter, renderer, i, materials[i]);
+            }
+        }
+
         /// Combine meshes that share the same material into a single mesh. Destroy original meshes if specified or just disable.
         private static GameObject CombineMeshAndCollidersForOneMaterial(
             GameObject parent,
-            IGrouping<(Material material, StaticEditorFlags staticFlags, int layer), (MeshFilter meshFilter, MeshRenderer renderer)>
+            IGrouping<(Material material, StaticEditorFlags staticFlags, int layer),
+                    (MeshFilter meshFilter, MeshRenderer renderer, int subMeshIndex, Material material)>
                 materialGroup,
             string meshOwnerPath,
             RebakeContext rebake,
@@ -386,19 +406,23 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
             for (var i = 0; i < groupLength; i++)
             {
-                var (meshFilter, _) = combineGroup[i];
+                var (meshFilter, _, subMeshIndex, _) = combineGroup[i];
 
                 combineMeshes[i] = new CombineInstance
                 {
                     mesh = meshFilter.sharedMesh,
+                    subMeshIndex = subMeshIndex,
                     transform = meshFilter.transform.localToWorldMatrix,
                 };
 
-                // Copy colliders from original mesh objects to the new combined mesh object
+                // Copy colliders from original mesh objects to the new combined mesh object, once: with the first submesh
                 // Not needed to disable colliders as we are deactivating the whole object
-                foreach (var collider in meshFilter.GetComponentsInChildren<Collider>())
+                if (subMeshIndex == 0)
                 {
-                    collider.CopyColliderTo(groupParent);
+                    foreach (var collider in meshFilter.GetComponentsInChildren<Collider>())
+                    {
+                        collider.CopyColliderTo(groupParent);
+                    }
                 }
 
                 if (destroyOriginals)
