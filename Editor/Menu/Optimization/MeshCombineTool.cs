@@ -495,6 +495,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 MeshUtility.SetMeshCompression(mesh, ModelImporterMeshCompression.Medium);
                 Undo.RegisterCompleteObjectUndo(existing, "Rebake combined mesh");
                 EditorUtility.CopySerialized(mesh, existing);
+                existing.name = Path.GetFileNameWithoutExtension(reusePath); // Main object name must match the file (e.g. "...Default2")
                 Object.DestroyImmediate(mesh);
                 MeshAssetOptimizationHeader.SetReadable(existing, false);
                 AssetDatabase.SaveAssetIfDirty(existing);
