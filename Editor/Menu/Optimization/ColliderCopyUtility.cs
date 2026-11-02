@@ -12,11 +12,11 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         /// possible. It goes on the first object (the container, then its children) where it is exact: box with rotation in 90° steps; sphere with
         /// uniform scale; capsule both; mesh collider (no center) only at the same pose. Otherwise a new child with the source's world pose is created.
         /// The container and the child objects are always fully static (collider only, they never move). Undoable.
-        public static Collider CopyColliderTo(this Collider source, GameObject target)
+        public static Collider CopyColliderTo(this Collider source, GameObject target, string containerName = CollidersContainerName)
         {
             if (source is not (BoxCollider or SphereCollider or CapsuleCollider or MeshCollider)) return null; // Unsupported collider type
 
-            var container = GetOrCreateContainer(target);
+            var container = GetOrCreateContainer(target, containerName);
             var copy = TryCopyInto(source, container.gameObject);
             if (copy) return copy;
 
@@ -75,10 +75,10 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
         /// A child with the source's world pose (convex/concave meshes, rotated boxes, non-uniformly scaled spheres...). Later colliders at the same
         /// pose or rotation reuse it.
-        private static GameObject CreateChild(Collider source, Transform container)
+        private static GameObject CreateChild(Component source, Transform container, string suffix = "Collider")
         {
             // Collider-only objects never move: always static, also under a "Dynamic" combined mesh (originals not marked static)
-            var child = new GameObject($"{source.name} Collider") { layer = source.gameObject.layer, isStatic = true };
+            var child = new GameObject($"{source.name} {suffix}") { layer = source.gameObject.layer, isStatic = true };
             child.transform.SetParent(container, false);
             child.transform.SetPositionAndRotation(source.transform.position, source.transform.rotation);
             child.transform.localScale = Divide(source.transform.lossyScale, container.lossyScale);
@@ -86,12 +86,38 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             return child;
         }
 
-        private static Transform GetOrCreateContainer(GameObject target)
+        /// Copies a component without a shared frame (e.g. a NavMeshObstacle) to a child of the container at the source's world pose and scale.
+        public static Component CopyComponentToChild(Component source, GameObject target, string containerName = CollidersContainerName)
         {
-            var existing = target.transform.Find(CollidersContainerName);
+            var child = CreateChild(source, GetOrCreateContainer(target, containerName), source.GetType().Name);
+            var copy = Undo.AddComponent(child, source.GetType());
+            EditorUtility.CopySerialized(source, copy);
+            return copy;
+        }
+
+        /// Copies the component with all its settings (e.g. a NavMeshModifier) to the target, optionally forcing "apply to children".
+        public static Component CopyComponentTo(Component source, GameObject target, bool applyToChildren = false)
+        {
+            var copy = Undo.AddComponent(target, source.GetType());
+            EditorUtility.CopySerialized(source, copy);
+            if (!applyToChildren) return copy;
+
+            var serialized = new SerializedObject(copy);
+            var property = serialized.FindProperty("m_ApplyToChildren");
+            if (property == null) return copy;
+
+            property.boolValue = true;
+            serialized.ApplyModifiedProperties();
+            return copy;
+        }
+
+        /// The collider container of the target (created when missing): "Colliders", or "Colliders (GroupName)" for a navmesh modifier group.
+        public static Transform GetOrCreateContainer(GameObject target, string containerName = CollidersContainerName)
+        {
+            var existing = target.transform.Find(containerName);
             if (existing) return existing;
 
-            var container = new GameObject(CollidersContainerName) { layer = target.layer, isStatic = true };
+            var container = new GameObject(containerName) { layer = target.layer, isStatic = true };
             container.transform.SetParent(target.transform, false);
             Undo.RegisterCreatedObjectUndo(container, "Copy collider");
             return container.transform;

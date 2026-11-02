@@ -2,11 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.AI;
 using UnityEngine.Rendering;
 using UnityEngine.SceneManagement;
+using Xprees.EditorTools.MeshCombine;
 using Object = UnityEngine.Object;
 
 namespace Xprees.EditorTools.Editor.Menu.Optimization
@@ -80,23 +83,53 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         /// The originals are deactivated and tagged EditorOnly. Mesh assets are saved next to <paramref name="meshOwnerPath"/>
         /// (prefab or scene asset path), resolved from the parent when empty. Returns the combined objects.
         /// A parent that already has combined children is rebaked instead (see <see cref="Rebake"/>).
-        public static List<GameObject> CombineChildren(GameObject parent, string meshOwnerPath = null) =>
-            HasCombinedChildren(parent)
-                ? Rebake(parent, false, meshOwnerPath)
-                : CombineUnderParent(parent, parent.GetChildGameObjects().ToArray(), "Combine child meshes of selected parent", meshOwnerPath);
+        public static List<GameObject> CombineChildren(GameObject parent, string meshOwnerPath = null, int minGroupSize = 0)
+        {
+            if (HasCombinedChildren(parent)) return Rebake(parent, false, meshOwnerPath, minGroupSize);
+
+            var pieces = parent.GetChildGameObjects().Where(IsCombinable).ToArray();
+            return CombineUnderParent(parent, pieces, false, minGroupSize, "Combine child meshes of selected parent", meshOwnerPath);
+        }
 
         /// Combine the plain mesh objects (only MeshFilter, MeshRenderer and colliders, no children) at any depth under the parent into
-        /// "Combined Mesh - ..." children of the parent, like <see cref="CombineChildren"/>. Inactive objects, mesh objects with children and objects
-        /// with other components (scripts, lights, LODs...) are skipped with their whole subtree.
+        /// "Combined Mesh - ..." children of the parent, like <see cref="CombineChildren"/>. Inactive objects, mesh objects with children, objects
+        /// without the opt-in static flag (Project Settings > Xprees > Mesh Combine) and objects with other components (scripts, lights, LODs...)
+        /// are skipped with their whole subtree. Components in the settings whitelist (navmesh modifier/obstacle) do not keep an object out.
         /// A parent that already has combined children is rebaked instead (see <see cref="Rebake"/>).
-        public static List<GameObject> CombineDescendants(GameObject parent, string meshOwnerPath = null)
+        public static List<GameObject> CombineDescendants(GameObject parent, string meshOwnerPath = null, int minGroupSize = 0)
         {
-            if (HasCombinedChildren(parent)) return Rebake(parent, true, meshOwnerPath);
+            if (HasCombinedChildren(parent)) return Rebake(parent, true, meshOwnerPath, minGroupSize);
 
             var pieces = new List<GameObject>();
             CollectPlainMeshes(parent.transform, pieces);
-            return CombineUnderParent(parent, pieces.ToArray(), "Combine all meshes under selected parent", meshOwnerPath);
+            return CombineUnderParent(parent, pieces.ToArray(), true, minGroupSize, "Combine all meshes under selected parent", meshOwnerPath);
         }
+
+        /// The tool settings of the parent: its <see cref="MeshCombineRoot"/> (added when missing, remembering the mode and the explicit minimum).
+        private static MeshCombineRoot EnsureRoot(GameObject parent, bool recursive, int minGroupSize)
+        {
+            if (!parent.TryGetComponent<MeshCombineRoot>(out var root)) root = Undo.AddComponent<MeshCombineRoot>(parent);
+            else Undo.RecordObject(root, "Update Mesh Combine Root");
+
+            root.recursive = recursive;
+            if (minGroupSize > 0) root.minGroupSize = minGroupSize;
+            EditorUtility.SetDirty(root);
+            return root;
+        }
+
+        private static int GetMinGroupSize(MeshCombineRoot root) =>
+            root && root.minGroupSize > 0 ? root.minGroupSize : Mathf.Max(1, MeshCombineSettings.instance.defaultMinGroupSize);
+
+        /// Active, no children, a mesh, only plain or whitelisted components, and the opt-in static flag.
+        private static bool IsCombinable(GameObject candidate) =>
+            candidate.activeSelf && IsPlainOrMovable(candidate) && MeshCombineSettings.instance.HasOptIn(candidate);
+
+        /// Structure only (no activity or opt-in): no children, a MeshFilter, and only plain or whitelisted components.
+        private static bool IsPlainOrMovable(GameObject candidate) =>
+            candidate.transform.childCount == 0 && candidate.TryGetComponent<MeshFilter>(out _)
+                                                && candidate.GetComponents<Component>().All(component =>
+                                                    component && (IsPlainMeshComponent(component)
+                                                                  || MeshCombineSettings.instance.IsMovable(component)));
 
         /// A direct child of the parent is a "Combined Mesh - ..." object created by this tool.
         public static bool HasCombinedChildren(GameObject parent) => GetCombinedChildren(parent).Count > 0;
@@ -112,7 +145,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         /// GUID, matched by object name). Mesh assets nothing uses any more are queued for deletion until the scene/prefab is saved.
         /// <paramref name="recursive"/> null detects it: recursive when an original sits deeper than a direct child.
         /// Throws when the parent is part of a prefab instance (rebake it in the prefab).
-        public static List<GameObject> Rebake(GameObject parent, bool? recursive = null, string meshOwnerPath = null)
+        public static List<GameObject> Rebake(GameObject parent, bool? recursive = null, string meshOwnerPath = null, int minGroupSize = 0)
         {
             const string undoName = "Rebake combined meshes";
             if (PrefabUtility.IsPartOfPrefabInstance(parent))
@@ -138,11 +171,16 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 Undo.DestroyObjectImmediate(old);
             }
 
+            // The stored mode wins over detection; an explicit argument replaces it
+            parent.TryGetComponent<MeshCombineRoot>(out var existingRoot);
             var originals = new List<GameObject>();
-            if (recursive ?? HasHiddenOriginalsBelowChildren(parent)) CollectPlainMeshes(parent.transform, originals, true);
+            if (recursive ?? existingRoot?.recursive ?? HasHiddenOriginalsBelowChildren(parent))
+                CollectPlainMeshes(parent.transform, originals, true);
             else originals.AddRange(parent.GetChildGameObjects(true).Where(IsHiddenOriginal));
-            recursive ??= originals.Any(original => original.transform.parent != parent.transform);
+            recursive ??= existingRoot ? existingRoot.recursive : originals.Any(original => original.transform.parent != parent.transform);
+            var root = EnsureRoot(parent, recursive.Value, minGroupSize);
 
+            // All originals come back (EditorOnly removed). Those that no longer qualify (flag removed, group too small) simply stay active
             foreach (var original in originals.Where(original => !original.activeSelf))
             {
                 Undo.RegisterCompleteObjectUndo(original, undoName);
@@ -157,22 +195,14 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 CollectPlainMeshes(parent.transform, plainMeshes);
                 pieces = plainMeshes.ToArray();
             }
-            else pieces = parent.GetChildGameObjects().ToArray();
+            else pieces = parent.GetChildGameObjects().Where(IsCombinable).ToArray();
 
             foreach (var piece in pieces)
             {
                 Undo.RegisterCompleteObjectUndo(piece, undoName);
             }
 
-            var combined = CombineMeshesAndColliders(parent, pieces, meshOwnerPath, context);
-
-            // Originals that could not be combined stay disabled: active and EditorOnly would strip them from builds
-            foreach (var original in originals.Where(original => original && original.activeSelf))
-            {
-                Debug.LogWarning($"'{original.name}' could not be combined (no mesh or renderer), it stays disabled.", original);
-                original.SetActive(false);
-                original.tag = EditorOnlyTag;
-            }
+            var combined = CombineMeshesAndColliders(parent, pieces, meshOwnerPath, GetMinGroupSize(root), context);
 
             Undo.CollapseUndoOperations(undoGroupIndex);
             CombinedMeshUndo.Track(undoGroupIndex, parent, meshOwnerPath,
@@ -201,7 +231,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
                 var components = childObject.GetComponents<Component>();
                 if (components.Length == 1) CollectPlainMeshes(child, pieces, includeHiddenOriginals); // Empty container (only Transform)
-                else if (child.childCount == 0 && components.All(IsPlainMeshComponent) && childObject.TryGetComponent<MeshFilter>(out _))
+                else if (IsPlainOrMovable(childObject) && (includeHiddenOriginals || MeshCombineSettings.instance.HasOptIn(childObject)))
                     pieces.Add(childObject);
             }
         }
@@ -209,7 +239,14 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         private static bool IsPlainMeshComponent(Component component) =>
             component is Transform or MeshFilter or MeshRenderer or Collider;
 
-        private static List<GameObject> CombineUnderParent(GameObject parent, GameObject[] children, string undoName, string meshOwnerPath)
+        private static List<GameObject> CombineUnderParent(
+            GameObject parent,
+            GameObject[] children,
+            bool recursive,
+            int minGroupSize,
+            string undoName,
+            string meshOwnerPath
+        )
         {
             Undo.IncrementCurrentGroup();
             var undoGroupIndex = Undo.GetCurrentGroup();
@@ -221,7 +258,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 Undo.RegisterCompleteObjectUndo(child, undoName);
             }
 
-            var combined = CombineMeshesAndColliders(parent, children, meshOwnerPath);
+            var root = EnsureRoot(parent, recursive, minGroupSize);
+            var combined = CombineMeshesAndColliders(parent, children, meshOwnerPath, GetMinGroupSize(root));
 
             Undo.CollapseUndoOperations(undoGroupIndex);
             CombinedMeshUndo.Track(undoGroupIndex, parent, meshOwnerPath, combined);
@@ -256,7 +294,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 Undo.RegisterCompleteObjectUndo(selectedObject, undoName);
             }
 
-            var combined = CombineMeshesAndColliders(parentGameObject, objects, meshOwnerPath);
+            var combined = CombineMeshesAndColliders(parentGameObject, objects, meshOwnerPath,
+                1); // The user picked these objects: no opt-in, no minimum
 
             Undo.CollapseUndoOperations(undoGroupIndex);
             CombinedMeshUndo.Track(undoGroupIndex, parentGameObject, meshOwnerPath, combined);
@@ -298,7 +337,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                     .Where(original => original != combined.transform && !original.gameObject.activeSelf && original.CompareTag(EditorOnlyTag)
                                        && GameObjectUtility.GetStaticEditorFlags(original.gameObject)
                                        == GameObjectUtility.GetStaticEditorFlags(combinedObject)
-                                       && original.gameObject.layer == combinedObject.layer)
+                                       && original.gameObject.layer == combinedObject.layer
+                                       && GroupedComponentSignature(original.gameObject) == GroupedComponentSignature(combinedObject))
                     .Select(original => (meshFilter: original.GetComponent<MeshFilter>(), renderer: original.GetComponent<MeshRenderer>()))
                     .Where(x => x.meshFilter && x.meshFilter.sharedMesh && x.renderer)
                     .SelectMany(x => SubMeshParts(x.meshFilter, x.renderer))
@@ -343,23 +383,80 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         /// Drop the lightmap UVs (UV2), e.g. from meshes of a scene that is not baked.
         public static void RemoveLightmapUVs(Mesh mesh) => mesh.uv2 = null;
 
+        /// The settings of the whitelisted "grouped" components (navmesh modifier) of the object. Objects with different ones are combined apart.
+        private static string GroupedComponentSignature(GameObject gameObject)
+        {
+            var signature = new StringBuilder();
+            foreach (var type in MeshCombineSettings.instance.GroupedTypes)
+            {
+                var component = gameObject.GetComponent(type);
+                if (!component) continue;
+
+                signature.Append(type.Name).Append('{');
+                var serialized = new SerializedObject(component);
+                var property = serialized.GetIterator();
+                for (var enterChildren = true; property.NextVisible(enterChildren); enterChildren = true)
+                {
+                    if (property.propertyPath == "m_Script") continue;
+
+                    signature.Append(property.propertyPath).Append('=').Append(property.propertyType switch
+                    {
+                        SerializedPropertyType.Integer or SerializedPropertyType.LayerMask => property.intValue.ToString(),
+                        SerializedPropertyType.Boolean => property.boolValue.ToString(),
+                        SerializedPropertyType.Float => property.floatValue.ToString("R"),
+                        SerializedPropertyType.String => property.stringValue,
+                        SerializedPropertyType.Enum => property.enumValueIndex.ToString(),
+                        SerializedPropertyType.ObjectReference => property.objectReferenceInstanceIDValue.ToString(),
+                        _ => string.Empty, // Arrays and structs: their children follow
+                    }).Append(';');
+                }
+
+                signature.Append('}');
+            }
+
+            return signature.ToString();
+        }
+
+        /// Short name of the grouped components' settings for the combined object ("Not Walkable", or the component type), "" without any.
+        private static string GroupedComponentLabel(GameObject gameObject)
+        {
+            foreach (var type in MeshCombineSettings.instance.GroupedTypes)
+            {
+                var component = gameObject.GetComponent(type);
+                if (!component) continue;
+
+                var serialized = new SerializedObject(component);
+                var overrideArea = serialized.FindProperty("m_OverrideArea");
+                var area = serialized.FindProperty("m_Area");
+                if (overrideArea is not { boolValue: true } || area == null) return type.Name;
+
+                var areaName = NavMesh.GetAreaNames().FirstOrDefault(name => NavMesh.GetAreaFromName(name) == area.intValue);
+                return string.IsNullOrEmpty(areaName) ? $"Area{area.intValue}" : areaName.Replace(" ", string.Empty);
+            }
+
+            return string.Empty;
+        }
+
         private static List<GameObject> CombineMeshesAndColliders(
             GameObject parent,
             GameObject[] children,
             string meshOwnerPath,
+            int minGroupSize,
             RebakeContext rebake = null
         )
         {
-            var meshFilters = children.Select(child => child.GetComponent<MeshFilter>()).ToArray();
-            var materialGroups = meshFilters
+            var parts = children
+                .Select(child => child.GetComponent<MeshFilter>())
                 .Where(mf => mf != null && mf.sharedMesh != null && mf.TryGetComponent<MeshRenderer>(out _)) // Skip non-mesh objects
                 .SelectMany(mf => SubMeshParts(mf, mf.GetComponent<MeshRenderer>()))
-                .GroupBy(x =>
-                {
-                    var mfGameObject = x.meshFilter.gameObject;
-                    // Group by material, static flags (e.g. glass without Occluder Static stays apart), and layer
-                    return (x.material, GameObjectUtility.GetStaticEditorFlags(mfGameObject), mfGameObject.layer);
-                });
+                .ToList();
+
+            // Group by material, static flags (e.g. glass without Occluder Static stays apart), layer, and the navmesh modifier settings
+            var groupKeys = parts.Select(x => x.meshFilter.gameObject).Distinct()
+                .ToDictionary(go => go, go => (GameObjectUtility.GetStaticEditorFlags(go), go.layer, GroupedComponentSignature(go)));
+            var materialGroups = DropSmallGroups(parts, groupKeys, minGroupSize)
+                .GroupBy(x => (x.material, groupKeys[x.meshFilter.gameObject].Item1, groupKeys[x.meshFilter.gameObject].layer,
+                    groupKeys[x.meshFilter.gameObject].Item3));
 
             var combined = materialGroups
                 .Select(materialGroup => CombineMeshAndCollidersForOneMaterial(parent, materialGroup, meshOwnerPath, rebake))
@@ -373,6 +470,29 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             }
 
             return combined;
+        }
+
+        /// Groups with fewer objects than the minimum stay uncombined. An object leaves with all its parts (a monitor with a body and a screen
+        /// must not be half combined), which can shrink other groups, so this repeats until nothing changes.
+        private static List<(MeshFilter meshFilter, MeshRenderer renderer, int subMeshIndex, Material material)> DropSmallGroups(
+            List<(MeshFilter meshFilter, MeshRenderer renderer, int subMeshIndex, Material material)> parts,
+            Dictionary<GameObject, (StaticEditorFlags, int layer, string)> groupKeys,
+            int minGroupSize
+        )
+        {
+            while (minGroupSize > 1)
+            {
+                var small = parts
+                    .GroupBy(x => (x.material, groupKeys[x.meshFilter.gameObject]))
+                    .Where(group => group.Select(x => x.meshFilter).Distinct().Count() < minGroupSize)
+                    .SelectMany(group => group.Select(x => x.meshFilter))
+                    .ToHashSet();
+                if (small.Count == 0) break;
+
+                parts = parts.Where(x => !small.Contains(x.meshFilter)).ToList();
+            }
+
+            return parts;
         }
 
         /// One part per rendered submesh with its material slot (a monitor gives its body and its screen), so a multi-material mesh keeps
@@ -393,7 +513,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         /// Combine meshes that share the same material into a single mesh. Destroy original meshes if specified or just disable.
         private static GameObject CombineMeshAndCollidersForOneMaterial(
             GameObject parent,
-            IGrouping<(Material material, StaticEditorFlags staticFlags, int layer),
+            IGrouping<(Material material, StaticEditorFlags staticFlags, int layer, string grouped),
                     (MeshFilter meshFilter, MeshRenderer renderer, int subMeshIndex, Material material)>
                 materialGroup,
             string meshOwnerPath,
@@ -410,6 +530,10 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             var staticFlags = materialGroup.Key.staticFlags;
             var shouldBeStatic = staticFlags != 0;
             var objectLayer = materialGroup.Key.layer;
+            var groupLabel = GroupedComponentLabel(combineGroup[0].meshFilter.gameObject);
+            var containerName = string.IsNullOrEmpty(groupLabel)
+                ? ColliderCopyUtility.CollidersContainerName
+                : $"{ColliderCopyUtility.CollidersContainerName} ({groupLabel})";
             var groupParent = new GameObject { layer = objectLayer };
             GameObjectUtility.SetStaticEditorFlags(groupParent, staticFlags); // The originals' flags, not all of them (isStatic)
             groupParent.transform.SetParent(parent.transform);
@@ -432,7 +556,16 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 {
                     foreach (var collider in meshFilter.GetComponentsInChildren<Collider>())
                     {
-                        collider.CopyColliderTo(groupParent);
+                        collider.CopyColliderTo(groupParent, containerName);
+                    }
+
+                    // Whitelisted components with their own frame (navmesh obstacle) follow as a child at the object's pose
+                    foreach (var type in MeshCombineSettings.instance.CopiedTypes)
+                    {
+                        foreach (var component in meshFilter.GetComponents(type))
+                        {
+                            ColliderCopyUtility.CopyComponentToChild(component, groupParent, containerName);
+                        }
                     }
                 }
 
@@ -450,7 +583,19 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
             var groupedMaterial = materialGroup.Key.material;
             groupParent.name =
-                $"{CombinedMeshPrefix} - {groupedMaterial.name} - {(shouldBeStatic ? "Static" : "Dynamic")} - {LayerMask.LayerToName(objectLayer)}";
+                $"{CombinedMeshPrefix} - {groupedMaterial.name} - {(shouldBeStatic ? "Static" : "Dynamic")} - {LayerMask.LayerToName(objectLayer)}"
+                + (string.IsNullOrEmpty(groupLabel) ? string.Empty : $" - {groupLabel}");
+
+            // The combined mesh is what the navmesh surface (render meshes) sees: it gets the modifier of the group, and so does the collider container
+            foreach (var type in MeshCombineSettings.instance.GroupedTypes)
+            {
+                var modifier = combineGroup[0].meshFilter.GetComponent(type);
+                if (!modifier) continue;
+
+                ColliderCopyUtility.CopyComponentTo(modifier, groupParent);
+                var container = groupParent.transform.Find(containerName);
+                if (container) ColliderCopyUtility.CopyComponentTo(modifier, container.gameObject, true);
+            }
 
             var combinedMesh = CreateCombinedMesh(combineMeshes, groupParent.name, NeedsLightmapUVs(staticFlags));
             // Prefabs can't serialize in-memory meshes, the reference would be lost on save. A rebake writes into the old asset of the same name
