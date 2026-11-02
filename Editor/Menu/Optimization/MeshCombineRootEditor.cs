@@ -1,5 +1,6 @@
 using System;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using Xprees.EditorTools.MeshCombine;
 
@@ -73,10 +74,21 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                     : $"This is part of a prefab instance and cannot be baked from here. {error}", MessageType.Info);
             }
 
-            using (new EditorGUI.DisabledScope(sourcePath == null))
+            using (new EditorGUILayout.HorizontalScope())
             {
-                if (GUILayout.Button("Rebake in prefab asset"))
-                    Run(() => Debug.Log($"Rebaked '{sourcePath}' ({MeshCombineInstanceBake.Rebake(root)} override(s) applied)."));
+                using (new EditorGUI.DisabledScope(sourcePath == null))
+                {
+                    if (GUILayout.Button("Rebake in prefab asset"))
+                        Run(() => Debug.Log($"Rebaked '{sourcePath}' ({MeshCombineInstanceBake.Rebake(root)} override(s) applied)."));
+                }
+
+                // Edit originals and the other edits happen in the prefab: open it in Prefab Mode (also when it cannot be baked from here)
+                var prefabPath = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(root.gameObject);
+                using (new EditorGUI.DisabledScope(string.IsNullOrEmpty(prefabPath)))
+                {
+                    if (GUILayout.Button("Open prefab"))
+                        PrefabStageUtility.OpenPrefab(prefabPath, PrefabUtility.GetNearestPrefabInstanceRoot(root.gameObject));
+                }
             }
         }
 
