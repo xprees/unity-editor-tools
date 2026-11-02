@@ -18,6 +18,14 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
         [Min(1)] public int defaultMinGroupSize = 2;
 
+        [Tooltip(
+            "Rebake the stale combine roots of a scene or prefab when it is saved. A root in 'Edit originals' mode is always baked on save.")]
+        public bool autoRebakeOnSave = true;
+
+        [Tooltip(
+            "Before a build, rebake the stale combine roots in all prefabs and scenes (the assets are saved) and fail the build if one fails.")]
+        public bool rebakeOnBuild;
+
         [Tooltip("Components that may stay on a combinable object. Objects with different settings of them are combined separately, and the " +
                  "combined object (and its collider container) gets a copy. Assembly-qualified type names.")]
         public List<string> groupedComponentTypes = new() { "Unity.AI.Navigation.NavMeshModifier, Unity.AI.Navigation" };
@@ -60,6 +68,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                 }
 
                 EditorGUILayout.PropertyField(so.FindProperty(nameof(MeshCombineSettings.defaultMinGroupSize)));
+                EditorGUILayout.PropertyField(so.FindProperty(nameof(MeshCombineSettings.autoRebakeOnSave)));
+                EditorGUILayout.PropertyField(so.FindProperty(nameof(MeshCombineSettings.rebakeOnBuild)));
                 DrawTypeList(so.FindProperty(nameof(MeshCombineSettings.groupedComponentTypes)));
                 DrawTypeList(so.FindProperty(nameof(MeshCombineSettings.copiedComponentTypes)));
                 if (so.ApplyModifiedProperties()) MeshCombineSettings.instance.SaveSettings();

@@ -15,6 +15,10 @@ namespace Xprees.EditorTools.MeshCombine
             "A group of meshes (same material, static flags, layer, navmesh modifier) with fewer objects than this stays uncombined. 0 = project default (Project Settings > Xprees > Mesh Combine).")]
         public int minGroupSize;
 
+        /// State of the sources (poses, meshes, materials, flags, colliders...) at the last bake. A different state means the combined meshes are stale.
         [HideInInspector] public string bakeHash;
+
+        /// The originals are shown for editing and the combined objects are hidden. Saving bakes first.
+        [HideInInspector] public bool editingOriginals;
     }
 }

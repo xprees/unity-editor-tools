@@ -112,12 +112,104 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             else Undo.RecordObject(root, "Update Mesh Combine Root");
 
             root.recursive = recursive;
+            root.editingOriginals = false; // Combining always leaves the edit mode
             if (minGroupSize > 0) root.minGroupSize = minGroupSize;
             EditorUtility.SetDirty(root);
             return root;
         }
 
-        private static int GetMinGroupSize(MeshCombineRoot root) =>
+        /// Remember the state of the sources the combined meshes were just baked from (stale detection).
+        private static void StoreBakeHash(MeshCombineRoot root)
+        {
+            Undo.RecordObject(root, "Store Mesh Combine bake state");
+            root.bakeHash = MeshCombineState.ComputeHash(root);
+            EditorUtility.SetDirty(root);
+        }
+
+        /// Show the originals for editing: the combined objects are hidden (their mesh assets stay), the EditorOnly originals are active again.
+        /// <see cref="Rebake"/> (the Bake button, or saving) combines them again. Throws on a prefab instance (edit the prefab).
+        public static void EnterEditMode(MeshCombineRoot root)
+        {
+            const string undoName = "Edit originals of combined meshes";
+            var parent = root.gameObject;
+            if (PrefabUtility.IsPartOfPrefabInstance(parent))
+                throw new InvalidOperationException($"'{parent.name}' is part of a prefab instance, open the prefab and edit there.");
+            if (root.editingOriginals) return;
+
+            Undo.IncrementCurrentGroup();
+            var undoGroupIndex = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName(undoName);
+
+            Undo.RecordObject(root, undoName);
+            foreach (var combined in GetCombinedChildren(parent))
+            {
+                Undo.RegisterCompleteObjectUndo(combined, undoName);
+                combined.SetActive(false); // Not tagged EditorOnly: a rebake tells it from the merged-in old combined meshes
+            }
+
+            foreach (var original in parent.GetComponentsInChildren<Transform>(true).Select(t => t.gameObject).Where(IsHiddenOriginal).ToList())
+            {
+                if (IsInsideCombinedMesh(original.transform, parent.transform)) continue;
+
+                Undo.RegisterCompleteObjectUndo(original, undoName);
+                original.SetActive(true);
+                original.tag = UntaggedTag;
+            }
+
+            root.editingOriginals = true;
+            EditorUtility.SetDirty(root);
+            Undo.CollapseUndoOperations(undoGroupIndex);
+            MeshCombineAutoBake.RefreshAutoSavePause(); // Prefab Mode Auto Save would save (and with it end) the edit mode
+        }
+
+        /// A generated "Combined Mesh" object (or a child of it, e.g. its colliders) between the object and the parent.
+        internal static bool IsInsideCombinedMesh(Transform candidate, Transform parent)
+        {
+            for (var t = candidate; t && t != parent; t = t.parent)
+            {
+                if (t.name.StartsWith(CombinedMeshPrefix) && t.GetComponent<MeshFilter>()) return true;
+            }
+
+            return false;
+        }
+
+        /// The originals a combined mesh was baked from: the objects under the root (outside the combined objects) that are hidden by a bake, or
+        /// shown for editing, with the same material, static flags, layer and navmesh modifier settings.
+        internal static List<GameObject> GetSources(GameObject combined, MeshCombineRoot root)
+        {
+            var material = combined.GetComponent<MeshRenderer>() ? combined.GetComponent<MeshRenderer>().sharedMaterial : null;
+            var flags = GameObjectUtility.GetStaticEditorFlags(combined);
+            var signature = GroupedComponentSignature(combined);
+            return root.GetComponentsInChildren<MeshRenderer>(true)
+                .Select(renderer => renderer.gameObject)
+                .Where(go => go != combined && !IsInsideCombinedMesh(go.transform, root.transform) && IsPlainOrMovable(go)
+                             && (IsHiddenOriginal(go) || (root.editingOriginals && go.activeSelf))
+                             && go.layer == combined.layer && GameObjectUtility.GetStaticEditorFlags(go) == flags
+                             && go.GetComponent<MeshRenderer>().sharedMaterials.Contains(material)
+                             && GroupedComponentSignature(go) == signature)
+                .ToList();
+        }
+
+        /// Why a mesh object under a combine root is not combined, or null when it is (or is a hidden original).
+        internal static string GetNotCombinedReason(GameObject candidate)
+        {
+            if (!candidate.activeSelf) return null;
+            if (candidate.transform.childCount > 0) return "has children";
+
+            foreach (var component in candidate.GetComponents<Component>())
+            {
+                if (!component) return "missing script";
+                if (IsPlainMeshComponent(component) || MeshCombineSettings.instance.IsMovable(component)) continue;
+
+                return $"script: {component.GetType().Name}";
+            }
+
+            return MeshCombineSettings.instance.HasOptIn(candidate)
+                ? "alone in its group or not baked"
+                : $"no {MeshCombineSettings.instance.optInFlag}";
+        }
+
+        internal static int GetMinGroupSize(MeshCombineRoot root) =>
             root && root.minGroupSize > 0 ? root.minGroupSize : Mathf.Max(1, MeshCombineSettings.instance.defaultMinGroupSize);
 
         /// Active, no children, a mesh, only plain or whitelisted components, and the opt-in static flag.
@@ -134,7 +226,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         /// A direct child of the parent is a "Combined Mesh - ..." object created by this tool.
         public static bool HasCombinedChildren(GameObject parent) => GetCombinedChildren(parent).Count > 0;
 
-        private static List<GameObject> GetCombinedChildren(GameObject parent) =>
+        internal static List<GameObject> GetCombinedChildren(GameObject parent) =>
             parent.transform.Cast<Transform>()
                 .Where(child => child.name.StartsWith(CombinedMeshPrefix) && child.GetComponent<MeshFilter>())
                 .Select(child => child.gameObject)
@@ -161,7 +253,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             foreach (var old in GetCombinedChildren(parent))
             {
                 var path = AssetDatabase.GetAssetPath(old.GetComponent<MeshFilter>().sharedMesh);
-                if (old.activeSelf && CombinedMeshCleanup.IsCombinedMeshPath(path))
+                // Hidden by the edit mode (not EditorOnly) or active: its asset is reused. EditorOnly + hidden: merged in by an older recursive combine
+                if ((old.activeSelf || !old.CompareTag(EditorOnlyTag)) && CombinedMeshCleanup.IsCombinedMeshPath(path))
                 {
                     if (!context.Reusable.TryGetValue(old.name, out var queue)) context.Reusable[old.name] = queue = new Queue<string>();
                     queue.Enqueue(path);
@@ -203,6 +296,8 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             }
 
             var combined = CombineMeshesAndColliders(parent, pieces, meshOwnerPath, GetMinGroupSize(root), context);
+            StoreBakeHash(root);
+            MeshCombineAutoBake.RefreshAutoSavePause();
 
             Undo.CollapseUndoOperations(undoGroupIndex);
             CombinedMeshUndo.Track(undoGroupIndex, parent, meshOwnerPath,
@@ -260,6 +355,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
             var root = EnsureRoot(parent, recursive, minGroupSize);
             var combined = CombineMeshesAndColliders(parent, children, meshOwnerPath, GetMinGroupSize(root));
+            StoreBakeHash(root);
 
             Undo.CollapseUndoOperations(undoGroupIndex);
             CombinedMeshUndo.Track(undoGroupIndex, parent, meshOwnerPath, combined);
