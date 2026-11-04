@@ -21,10 +21,11 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             MeshCombineState.Invalidated += EditorApplication.RepaintHierarchyWindow;
         }
 
+        // The hierarchy callback still hands over an int; the implicit int -> EntityId conversion feeds the EntityId API.
         private static void OnItemGUI(int instanceId, Rect rect)
         {
             if (Event.current.type != EventType.Repaint || Application.isPlaying) return;
-            if (EditorUtility.InstanceIDToObject(instanceId) is not GameObject go) return;
+            if (EditorUtility.EntityIdToObject(instanceId) is not GameObject go) return;
 
             var (text, color) = GetBadge(go);
             if (text == null) return;

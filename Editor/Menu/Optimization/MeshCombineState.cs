@@ -23,7 +23,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
     internal static class MeshCombineState
     {
         private const double DebounceSeconds = 0.7;
-        private static readonly Dictionary<int, CombineState> Cache = new();
+        private static readonly Dictionary<EntityId, CombineState> Cache = new();
         private static double dirtyAt = -1;
 
         /// Raised when cached states were dropped, so the views repaint.
@@ -50,9 +50,10 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
         public static CombineState GetState(MeshCombineRoot root)
         {
             if (root.editingOriginals) return CombineState.Editing;
-            if (Cache.TryGetValue(root.GetInstanceID(), out var cached)) return cached;
+            var id = root.GetEntityId();
+            if (Cache.TryGetValue(id, out var cached)) return cached;
 
-            return Cache[root.GetInstanceID()] = ComputeState(root);
+            return Cache[id] = ComputeState(root);
         }
 
         /// Not cached: the current state of the sources against the stored one.

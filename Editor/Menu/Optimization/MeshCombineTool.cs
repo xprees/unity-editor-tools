@@ -502,7 +502,7 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
                         SerializedPropertyType.Float => property.floatValue.ToString("R"),
                         SerializedPropertyType.String => property.stringValue,
                         SerializedPropertyType.Enum => property.enumValueIndex.ToString(),
-                        SerializedPropertyType.ObjectReference => property.objectReferenceInstanceIDValue.ToString(),
+                        SerializedPropertyType.ObjectReference => ObjectReferenceId(property),
                         _ => string.Empty, // Arrays and structs: their children follow
                     }).Append(';');
                 }
@@ -511,6 +511,17 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             }
 
             return signature.ToString();
+        }
+
+        /// Identity of the referenced object for the signature. 6000.4 renamed the property to the EntityId one; before that only the int id exists.
+        private static string ObjectReferenceId(SerializedProperty property)
+        {
+#if UNITY_6000_4_OR_NEWER
+            return property.objectReferenceEntityIdValue.ToString();
+#else
+            EntityId id = property.objectReferenceInstanceIDValue;
+            return id.ToString();
+#endif
         }
 
         /// Short name of the grouped components' settings for the combined object ("Not Walkable", or the component type), "" without any.
