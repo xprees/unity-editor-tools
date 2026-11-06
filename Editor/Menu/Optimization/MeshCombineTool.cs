@@ -250,7 +250,15 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
             var context = new RebakeContext();
             var leftovers = new List<string>();
-            foreach (var old in GetCombinedChildren(parent))
+            var oldCombined = GetCombinedChildren(parent);
+
+            // An Inspector still showing a destroyed combined object (or its Mesh asset) throws in EditorElement.HeaderOnGUI: move the selection first
+            if (Selection.objects.Any(selected => selected is GameObject go && oldCombined.Contains(go)
+                                                  || selected is Mesh mesh
+                                                  && CombinedMeshCleanup.IsCombinedMeshPath(AssetDatabase.GetAssetPath(mesh))))
+                Selection.activeGameObject = parent;
+
+            foreach (var old in oldCombined)
             {
                 var path = AssetDatabase.GetAssetPath(old.GetComponent<MeshFilter>().sharedMesh);
                 // Hidden by the edit mode (not EditorOnly) or active: its asset is reused. EditorOnly + hidden: merged in by an older recursive combine
