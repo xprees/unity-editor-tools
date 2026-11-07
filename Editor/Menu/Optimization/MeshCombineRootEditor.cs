@@ -92,18 +92,24 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
             }
         }
 
+        /// Runs the action after the current GUI event. A bake destroys and recreates the combined mesh objects; when the button is drawn in the
+        /// Inspector header of one of them (MeshCombineInspectorHeader), running it inline destroys the inspected target mid-OnGUI and the
+        /// Editor crashes natively in InspectorWindowUtils.IsExcludedClass.
         internal static void Run(Action action)
         {
-            try
+            EditorApplication.delayCall += () =>
             {
-                action();
-            }
-            catch (InvalidOperationException e)
-            {
-                Debug.LogError(e.Message);
-            }
+                try
+                {
+                    action();
+                }
+                catch (InvalidOperationException e)
+                {
+                    Debug.LogError(e.Message);
+                }
 
-            EditorApplication.RepaintHierarchyWindow();
+                EditorApplication.RepaintHierarchyWindow();
+            };
         }
     }
 }
