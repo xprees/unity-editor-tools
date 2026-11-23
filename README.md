@@ -6,6 +6,7 @@
 
 - **Read-Only** Attribute: A custom attribute that can be applied to fields to make them read-only in the Unity Editor.
 - **Expandable** Attribute: A custom attribute that allows fields to be displayed in an expandable manner in the Unity Editor.
+- **ScenePath** Attribute: Draws a `string` scene path as a SceneAsset picker and warns when the scene is missing or not in the build scene list.
 - **Editor scripting Utilities**
     - PrefabExtensions
     - ReflectionExtensions
