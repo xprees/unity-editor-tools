@@ -17,15 +17,23 @@ namespace Xprees.EditorTools.Editor.Menu.Optimization
 
         static MeshCombineHierarchyBadges()
         {
+#if UNITY_6000_4_OR_NEWER
+            EditorApplication.hierarchyWindowItemByEntityIdOnGUI += OnItemGUI;
+#else
             EditorApplication.hierarchyWindowItemOnGUI += OnItemGUI;
+#endif
             MeshCombineState.Invalidated += EditorApplication.RepaintHierarchyWindow;
         }
 
-        // The hierarchy callback still hands over an int; the implicit int -> EntityId conversion feeds the EntityId API.
-        private static void OnItemGUI(int instanceId, Rect rect)
+#if !UNITY_6000_4_OR_NEWER
+        // Before 6.4 the hierarchy callback hands over an int; the implicit int -> EntityId conversion feeds the EntityId API.
+        private static void OnItemGUI(int instanceId, Rect rect) => OnItemGUI((EntityId) instanceId, rect);
+#endif
+
+        private static void OnItemGUI(EntityId entityId, Rect rect)
         {
             if (Event.current.type != EventType.Repaint || Application.isPlaying) return;
-            if (EditorUtility.EntityIdToObject(instanceId) is not GameObject go) return;
+            if (EditorUtility.EntityIdToObject(entityId) is not GameObject go) return;
 
             var (text, color) = GetBadge(go);
             if (text == null) return;
